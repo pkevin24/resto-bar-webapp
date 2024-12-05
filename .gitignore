@@ -1,13 +1,22 @@
-*.js
-!jest.config.js
-*.d.ts
-node_modules
+# Ignore .classpath and Eclipse settings
 .classpath
 .settings/
+
+# Ignore CDK-related files
 cdk/package-lock.json
 cdk/cdk.context.json
 dependency-reduced-pom.xml
-# CDK asset staging directory
 .cdk.staging
 cdk.out
+
+# Ignore build and target directories
 /target/
+
+# Ignore node_modules and JS-related files
+node_modules
+*.js
+!jest.config.js
+*.d.ts
+
+# Ignore .DS_Store
+.DS_Store
