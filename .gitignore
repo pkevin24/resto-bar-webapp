@@ -2,9 +2,11 @@
 !jest.config.js
 *.d.ts
 node_modules
-*.classpath
-*.prefs
-*.DS_Store
+.classpath
+.settings/
+cdk/package-lock.json
+cdk/cdk.context.json
+dependency-reduced-pom.xml
 # CDK asset staging directory
 .cdk.staging
 cdk.out
