@@ -11,6 +11,10 @@ export class RestBarWebappStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
     const env = scope.node.tryGetContext('env') || 'dev';
+    const myPublicIP = this.node.tryGetContext('ipAdr');
+    if (!myPublicIP) {
+      throw new Error("Public IP is not set.");
+    }
 
     const api = new apigateway.RestApi(this,"ApiHealthCheck",{
       restApiName:'Api for Restobar',
@@ -82,8 +86,7 @@ export class RestBarWebappStack extends cdk.Stack {
     //Granting lambda access to read permission for the secret
     secret.grantRead(lambdaFunction);
 
-    //Allowing lambda to connect with RDS
-    rdsSecuritygroup.addIngressRule(lambdaSecurityGroup,ec2.Port.tcp(5432),'Allow Lambda to access to RDS');
+    
 
     // Add IAM permissions for Lambda to manage security groups
     lambdaFunction.addToRolePolicy(new iam.PolicyStatement({
@@ -99,14 +102,44 @@ export class RestBarWebappStack extends cdk.Stack {
     const endpoint1 = api.root.addResource('healthstatus');
     endpoint1.addMethod('GET',new apigateway.LambdaIntegration(lambdaFunction));
 
-    // The code that defines your stack goes here
+    //Bastion Host to connect RDS through dbeaver
+    //adding Security group to bastion host
+    const bastionSecurityGroup = new ec2.SecurityGroup(this,"bastionSecurityGroup",{
+      vpc,
+      description: "Allow SSH access to the bastion host",
+      allowAllOutbound: true,
+    });
 
-    // example resource
-    // const queue = new sqs.Queue(this, 'RestBarWebappQueue', {
-    //   visibilityTimeout: cdk.Duration.seconds(300)
-    // });
+    //allow ssh access from local to bastion host
+    bastionSecurityGroup.addIngressRule(
+      ec2.Peer.ipv4(myPublicIP + '/32'),
+      ec2.Port.tcp(22),
+      'Allow SSH access from my IP'
+    );
+    
+    //Allowing lambda to connect with RDS
+    rdsSecuritygroup.addIngressRule(lambdaSecurityGroup,ec2.Port.tcp(5432),'Allow Lambda to access to RDS');
+
+    //Allowing Bastainhost to connect to RDS
+    rdsSecuritygroup.addIngressRule(bastionSecurityGroup,ec2.Port.tcp(5432),'Allow Bastian Host to access to RDS');
+    
+    //EC2 instance for bastian host
+    const bastionHost = new ec2.Instance(this, "BastionHost", {
+      instanceType: ec2.InstanceType.of(
+        ec2.InstanceClass.T3,
+        ec2.InstanceSize.MICRO
+      ),
+      machineImage: ec2.MachineImage.latestAmazonLinux2023(),
+      vpc,
+      vpcSubnets: {
+        subnetType: ec2.SubnetType.PUBLIC,
+      },
+      securityGroup: bastionSecurityGroup,
+      keyName: "rdsJumpBox", //create a key pair and
+    });
 
     
+
     
   }
 }
