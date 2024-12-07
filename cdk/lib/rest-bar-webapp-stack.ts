@@ -51,18 +51,19 @@ export class RestBarWebappStack extends cdk.Stack {
     })
 
     const rdsInstance= new rds.DatabaseInstance(this, "RdsInstance", {
-      engine: rds.DatabaseInstanceEngine.postgres({version:rds.PostgresEngineVersion.VER_12_18}),
-      // credentials: {
-      //   username: secret.secretValueFromJson('username').toString(),
-      //   password: secret.secretValueFromJson('password')
-      // },
-      credentials:rds.Credentials.fromSecret(secret),
+      engine: rds.DatabaseInstanceEngine.postgres({ version: rds.PostgresEngineVersion.VER_12_18 }),
+      credentials: rds.Credentials.fromSecret(secret),
+      instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MICRO), 
+      allocatedStorage: 20, 
+      maxAllocatedStorage: 20,
       vpc,
-      vpcSubnets:{
-        subnetType:ec2.SubnetType.PRIVATE_WITH_EGRESS
+      vpcSubnets: {
+        subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS, 
       },
-      securityGroups:[rdsSecuritygroup],
-      publiclyAccessible:false
+      securityGroups: [rdsSecuritygroup],
+      publiclyAccessible: false, 
+      storageType: rds.StorageType.GP2,
+      backupRetention: cdk.Duration.days(1),
     });
 
     const lambdaSecurityGroup = new ec2.SecurityGroup(this,"LambdaSecurityGroup",{
@@ -126,7 +127,7 @@ export class RestBarWebappStack extends cdk.Stack {
     //EC2 instance for bastian host
     const bastionHost = new ec2.Instance(this, "BastionHost", {
       instanceType: ec2.InstanceType.of(
-        ec2.InstanceClass.T3,
+        ec2.InstanceClass.T2,
         ec2.InstanceSize.MICRO
       ),
       machineImage: ec2.MachineImage.latestAmazonLinux2023(),
