@@ -6,6 +6,13 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as rds from 'aws-cdk-lib/aws-rds';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import { ApiGateway, ApiGatewayProps } from './api';
+import { Vpc, VpcProps } from './vpc';
+import { Secret, SecretProps } from './secret';
+import { SecurityGroup, SecurityGroupProps } from './securitygroup';
+import { RdsInstance, RdsInstanceProps } from './rds';
+import { Lambda, LambdaProps } from './lambda';
+import { ec2Instance, ec2InstanceProps } from './ec2';
 
 export class RestBarWebappStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -16,131 +23,143 @@ export class RestBarWebappStack extends cdk.Stack {
       throw new Error("Public IP is not set.");
     }
 
-    const api = new apigateway.RestApi(this,"ApiHealthCheck",{
-      restApiName:'Api for Restobar',
+    // API Gateway configuration
+    let apiProps: ApiGatewayProps = {
+      restApiName: 'Api for Restobar',
       description: 'This service is used to serve Lambda',
-      deployOptions:{
-        stageName:env
+      deployOptions: {
+        stageName: env,
       }
-    });
+    }
 
-    const vpc = new ec2.Vpc(this,'vpc',{
-      maxAzs:2,
+    const api = new ApiGateway(this, `Apigateway1-${env}`, apiProps);
+
+    // VPC configuration
+    let vpcProp: VpcProps = {
+      maxAzs: 2,
       subnetConfiguration: [
-        {
-          subnetType:ec2.SubnetType.PRIVATE_WITH_EGRESS,
-          name:"Private",
-        },
-        {
-          subnetType:ec2.SubnetType.PUBLIC,
-          name:"Public",
-        }
+        { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS, name: "Private" },
+        { subnetType: ec2.SubnetType.PUBLIC, name: "Public" }
       ]
-    }) 
+    }
 
-    const secret = new secretsmanager.Secret(this,"secret",{
+    const customVpc = new Vpc(this, 'CustomVpc', vpcProp);
+
+    // Secrets Manager configuration
+    let secretProps: SecretProps = {
       secretName: "rdsCredentials",
-      generateSecretString:{
+      generateSecretString: {
         secretStringTemplate: JSON.stringify({ username: 'postgres' }),
-        generateStringKey: 'password'
+        generateStringKey: 'password',
+        excludeCharacters: '/@" ',
       }
-    });
+    }
 
-    const rdsSecuritygroup = new ec2.SecurityGroup(this,"rdsSecurtiyGroup",{
-      vpc,
-    })
+    const secret = new Secret(this, `Secret-${env}-${Date.now()}`, secretProps);
+    if (!secret || !secret.secret) {
+      throw new Error('Secret is not properly initialized.');
+    }
 
-    const rdsInstance= new rds.DatabaseInstance(this, "RdsInstance", {
+    // RDS Security Group configuration
+    let rdsSecurityGroupProps: SecurityGroupProps = { vpc: customVpc.vpc };
+    const rdsSecuritygroup = new SecurityGroup(this, "rdsSecurityGroup", rdsSecurityGroupProps);
+
+    // RDS instance configuration
+    let rdsInstanceProps: RdsInstanceProps = {
       engine: rds.DatabaseInstanceEngine.postgres({ version: rds.PostgresEngineVersion.VER_12_18 }),
-      credentials: rds.Credentials.fromSecret(secret),
-      instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MICRO), 
-      allocatedStorage: 20, 
+      credentials: rds.Credentials.fromSecret(secret.secret),
+      instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MICRO),
+      allocatedStorage: 20,
       maxAllocatedStorage: 20,
-      vpc,
-      vpcSubnets: {
-        subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS, 
-      },
-      securityGroups: [rdsSecuritygroup],
-      publiclyAccessible: false, 
+      vpc: customVpc.vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      securityGroups: [rdsSecuritygroup.securityGroup],
+      publiclyAccessible: false,
       storageType: rds.StorageType.GP2,
       backupRetention: cdk.Duration.days(1),
+    }
+
+    const rdsInstance = new RdsInstance(this, "RdsInstance", rdsInstanceProps);
+
+    // Lambda Security Group configuration
+    let lambdaSecurityGroupProps: SecurityGroupProps = { vpc: customVpc.vpc };
+    const lambdaSecurityGroup = new ec2.SecurityGroup(this, "LambdaSecurityGroup", lambdaSecurityGroupProps);
+
+    // Lambda Execution Role
+    let lambdaRole = new iam.Role(this, 'LambdaExecutionRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
+        iam.ManagedPolicy.fromAwsManagedPolicyName('SecretsManagerReadWrite'),  // Fix policy ARN
+      ],
     });
-
-    const lambdaSecurityGroup = new ec2.SecurityGroup(this,"LambdaSecurityGroup",{
-      vpc
-    })
-
-    const lambdaFunction = new lambda.Function(this,"lambdaFunction",{
-      runtime: lambda.Runtime.JAVA_17,
-      handler:'com.rstobar.rest_bar_webapp.Handler::handleRequest',
-      code: lambda.Code.fromAsset('../target/rest-bar-webapp-0.0.1-SNAPSHOT.jar'),
-      functionName:'LambdaFunctionForRestoBar',
-      vpc,
-      securityGroups:[lambdaSecurityGroup],
-      environment:{
-        SECRET_NAME : secret.secretName,
-        VPC_ID: vpc.vpcId,
-      },
-      timeout: cdk.Duration.seconds(20)
-    })
-
-    //Granting lambda access to read permission for the secret
-    secret.grantRead(lambdaFunction);
-
+    
+    // Add EC2 network interface management permissions for Lambda
+    lambdaRole.addToPolicy(new iam.PolicyStatement({
+      actions: [
+        'ec2:CreateNetworkInterface',
+        'ec2:DescribeNetworkInterfaces',
+        'ec2:DeleteNetworkInterface',
+      ],
+      resources: ['*'], // You can restrict resources further if needed
+    }));
     
 
-    // Add IAM permissions for Lambda to manage security groups
-    lambdaFunction.addToRolePolicy(new iam.PolicyStatement({
-      actions: [
-        'ec2:DescribeSecurityGroups',
-        'ec2:RevokeSecurityGroupIngress',
-        'ec2:RevokeSecurityGroupEgress',
-      ],
-      resources: ['*'], // Restrict further if needed
-    }));
+    // Lambda function configuration
+    let lambdaFunctionProps: LambdaProps = {
+      runtime: lambda.Runtime.JAVA_17,
+      handler: 'com.rstobar.rest_bar_webapp.Handler::handleRequest',
+      code: lambda.Code.fromAsset('../target/rest-bar-webapp-0.0.1-SNAPSHOT.jar'),
+      functionName: 'LambdaFunctionForRestoBar',
+      vpc: customVpc.vpc,
+      securityGroups: [lambdaSecurityGroup],
+      environment: {
+        SECRET_NAME: secret.secret.secretName,
+        VPC_ID: customVpc.vpc.vpcId,
+      },
+      timeout: cdk.Duration.seconds(20),
+      role: lambdaRole
+    }
 
+    const lambdaFunction = new Lambda(this, "lambdaFunction", lambdaFunctionProps);
 
+    // Granting lambda access to read permission for the secret
+    secret.grantRead(lambdaRole);
+
+    // API Gateway - health status endpoint
     const endpoint1 = api.root.addResource('healthstatus');
-    endpoint1.addMethod('GET',new apigateway.LambdaIntegration(lambdaFunction));
+    endpoint1.addMethod('GET', new apigateway.LambdaIntegration(lambdaFunction.function));
 
-    //Bastion Host to connect RDS through dbeaver
-    //adding Security group to bastion host
-    const bastionSecurityGroup = new ec2.SecurityGroup(this,"bastionSecurityGroup",{
-      vpc,
-      description: "Allow SSH access to the bastion host",
-      allowAllOutbound: true,
-    });
+    // Bastion Host Security Group configuration
+    let bastionSecurityGroupProps: SecurityGroupProps = { vpc: customVpc.vpc };
+    const bastionSecurityGroup = new ec2.SecurityGroup(this, "bastionSecurityGroup", bastionSecurityGroupProps);
 
-    //allow ssh access from local to bastion host
+    // Allow SSH access from local to bastion host
     bastionSecurityGroup.addIngressRule(
       ec2.Peer.ipv4(myPublicIP + '/32'),
       ec2.Port.tcp(22),
       'Allow SSH access from my IP'
     );
-    
-    //Allowing lambda to connect with RDS
-    rdsSecuritygroup.addIngressRule(lambdaSecurityGroup,ec2.Port.tcp(5432),'Allow Lambda to access to RDS');
 
-    //Allowing Bastainhost to connect to RDS
-    rdsSecuritygroup.addIngressRule(bastionSecurityGroup,ec2.Port.tcp(5432),'Allow Bastian Host to access to RDS');
-    
-    //EC2 instance for bastian host
-    const bastionHost = new ec2.Instance(this, "BastionHost", {
+    // Allow Lambda to connect with RDS
+    rdsSecuritygroup.addIngressRule(lambdaSecurityGroup, ec2.Port.tcp(5432), 'Allow Lambda to access RDS');
+
+    // Allow Bastion host to connect to RDS
+    rdsSecuritygroup.addIngressRule(bastionSecurityGroup, ec2.Port.tcp(5432), 'Allow Bastion Host to access RDS');
+
+    // Bastion Host configuration
+    let bastionHostProp: ec2InstanceProps = {
       instanceType: ec2.InstanceType.of(
-        ec2.InstanceClass.T2,
+        ec2.InstanceClass.T2, 
         ec2.InstanceSize.MICRO
       ),
-      machineImage: ec2.MachineImage.latestAmazonLinux2023(),
-      vpc,
-      vpcSubnets: {
-        subnetType: ec2.SubnetType.PUBLIC,
-      },
+      machineImage: ec2.MachineImage.latestAmazonLinux2(),
+      vpc: customVpc.vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
       securityGroup: bastionSecurityGroup,
-      keyName: "rdsJumpBox", //create a key pair and
-    });
+      keyName: "rdsJumpBox",
+    }
 
-    
-
-    
+    const bastionHost = new ec2Instance(this, "BastionHost", bastionHostProp);
   }
 }
